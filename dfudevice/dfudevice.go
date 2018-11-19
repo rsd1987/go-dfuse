@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -164,16 +165,16 @@ func (d DFUDevice) MassErase() error {
 	return err
 }
 
-func pageErase() {
-
+func (d DFUDevice) PageErase(page uint) error {
+	return nil
 }
 
 func setAddress() {
 
 }
 
-func writeMemory() {
-
+func (d DFUDevice) WriteMemory(addr uint, data []byte) error {
+	return nil
 }
 
 func writePage() {
@@ -245,10 +246,65 @@ func (d DFUDevice) GetMemoryLayout() (mem []MemoryLayout, err error) {
 	return
 }
 
-func WriteDFUFile(dfuFile DFUFile, dfuDevice DFUDevice) error {
+func WriteDFUImage(dfuImage DFUImage, dfuDevice DFUDevice) error {
+	massErase := false
+
 	mem, err := dfuDevice.GetMemoryLayout()
 
-	fmt.Printf("%x\r\n", mem[0].StartAddress)
+	//TODO: This should search mem[] for the correct location
+	memory := mem[0]
+
+	//Check that target fits within mem
+	//if uint(dfuImage.Prefix.Address+dfuTarget.Prefix.Size) > mem[0].StartAddress+mem[0].Size {
+	//	return fmt.Errorf("Target address of %x and size of %d will not fit within specified device.",
+	//		dfuTarget.Prefix.Address, dfuTarget.Prefix.Size)
+	//}
+
+	//fmt.Printf("Writing to device starting at page 0x%x\r\n", dfuTarget.Prefix.Address)
+
+	fmt.Println("Erasing pages...")
+
+	if massErase == true {
+		err = dfuDevice.MassErase()
+
+		if err != nil {
+			return err
+		}
+	} else {
+		for _, target := range dfuImage.Targets {
+			startPage := -1
+			pagesToErase := uint(math.Ceil(float64(target.Prefix.Size) / float64(memory.PageSize)))
+
+			if int(target.Prefix.Size) != len(target.Elements) {
+				return fmt.Errorf("Mismatch target size, size claims %d, but has %d elements", target.Prefix.Size, len(target.Elements))
+			}
+
+			for idx := uint(0); idx < memory.Pages; idx++ {
+				//Target should be at page boundary
+				if memory.StartAddress+(idx*memory.PageSize) == uint(target.Prefix.Address) {
+					startPage = int(idx)
+					break
+				}
+			}
+
+			if startPage == -1 {
+				return fmt.Errorf("Failed to find target address %x in device memory", target.Prefix.Address)
+			} else {
+				for numPages := 0; numPages < int(pagesToErase); numPages++ {
+					err = dfuDevice.PageErase(uint(startPage + numPages))
+
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+
+	//By this point, the appropriate amount of flash has been erased, write each target
+	for _, target := range dfuImage.Targets {
+		dfuDevice.WriteMemory(uint(target.Prefix.Address), target.Elements)
+	}
 
 	return err
 }
@@ -269,7 +325,7 @@ func Test(filename string) {
 		fmt.Println("DFU File Format Failed: ", err)
 	}
 
-	err = WriteDFUFile(dfu, dfuDevice)
+	err = WriteDFUImage(dfu.Images[0], dfuDevice)
 
 	if err != nil {
 		fmt.Println("Write DFUFile Failed ", err)
