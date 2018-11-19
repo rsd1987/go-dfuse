@@ -25,9 +25,17 @@ const (
 )
 
 const (
-	statusOK          = 0x00
-	statusErrorTarget = 0x01
-	statusErrorFile   = 0x02
+	dfuStatusAppIdle              = 0x00
+	dfuStatusAppDetach            = 0x01
+	dfuStatusDfuIdle              = 0x02
+	dfuStatusDfuDownloadSync      = 0x03
+	dfuStatusDfuDownloadBusy      = 0x04
+	dfuStatusDfuDownloadIdle      = 0x05
+	dfuStatusDfuManifestSync      = 0x06
+	dfuStatusDfuManifest          = 0x07
+	dfuStatusDfuManifestWaitReset = 0x08
+	dfuStatusDfuUploadIdle        = 0x09
+	dfuStatusDfuError             = 0x0a
 )
 
 const (
@@ -47,6 +55,9 @@ func ListDevices() {
 func GetDevices() []*gousb.Device {
 	ctx := gousb.NewContext()
 	defer ctx.Close()
+
+	//instead on the command line run 'export LIBUSB_DEBUG=7' before running
+	//ctx.Debug(7)
 
 	devs, err := ctx.OpenDevices(func(desc *gousb.DeviceDesc) bool {
 		if desc.Vendor == SPARKMAXDFUVID && desc.Product == SPARKMAXDFUPID {
@@ -117,6 +128,7 @@ func Init() (device DFUDevice, err error) {
 	}
 
 	device.dev = devs[0]
+	device.dev.ControlTimeout = 5000000000 //5s
 
 	//TODO: This should find the correct interface if possible
 	// Claim the default interface
@@ -148,7 +160,7 @@ func (d DFUDevice) GetStatus() (byte, error) {
 		return 0, fmt.Errorf("GetStatus(): Device not initialized")
 	}
 
-	var dfuStatus [32]byte
+	var dfuStatus [12]byte
 
 	_, err := d.dev.Control(0xA1, cmdGETSTATUS, 0, dfuINTERFACE, dfuStatus[:])
 
@@ -165,8 +177,44 @@ func (d DFUDevice) MassErase() error {
 	return err
 }
 
-func (d DFUDevice) PageErase(page uint) error {
-	return nil
+func (d DFUDevice) PageErase(addr uint) error {
+	fmt.Printf("Erasing address 0x%x\r\n", addr)
+
+	cmdBuffer := make([]byte, 5)
+	cmdBuffer[0] = 0x41
+
+	binary.LittleEndian.PutUint32(cmdBuffer[1:], uint32(addr))
+
+	_, err := d.dev.Control(0x21, cmdDNLOAD, 0, dfuINTERFACE, cmdBuffer)
+
+	if err != nil {
+		fmt.Println("Failing here 1...")
+		return err
+	}
+
+	status, err := d.GetStatus()
+
+	if err != nil {
+		fmt.Println("Failing here 2...")
+		return err
+	}
+
+	if status != dfuStatusDfuDownloadBusy {
+		return fmt.Errorf("Failed to erase dfuStatusDfuDownloadBusy 0x%x", addr)
+	}
+
+	status, err = d.GetStatus()
+
+	if err != nil {
+		fmt.Println("Failing here 3...")
+		return err
+	}
+
+	if status != dfuStatusDfuDownloadIdle {
+		return fmt.Errorf("Failed to erase dfuStatusDfuDownloadIdle 0x%x", addr)
+	}
+
+	return err
 }
 
 func setAddress() {
@@ -291,7 +339,7 @@ func WriteDFUImage(dfuImage DFUImage, dfuDevice DFUDevice) error {
 				return fmt.Errorf("Failed to find target address %x in device memory", target.Prefix.Address)
 			} else {
 				for numPages := 0; numPages < int(pagesToErase); numPages++ {
-					err = dfuDevice.PageErase(uint(startPage + numPages))
+					err = dfuDevice.PageErase(uint(target.Prefix.Address) + (uint(startPage+numPages) * memory.PageSize))
 
 					if err != nil {
 						return err
