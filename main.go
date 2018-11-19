@@ -1,8 +1,11 @@
 package main
 
-import "github.com/willtoth/go-dfu/dfudevice"
+import (
+	"os"
+
+	"github.com/willtoth/go-dfu/dfudevice"
+)
 
 func main() {
-	//dfudevice.ListDevices()
-	dfudevice.Test()
+	dfudevice.Test(os.Args[1])
 }
