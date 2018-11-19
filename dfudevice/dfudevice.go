@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/google/gousb"
@@ -32,6 +34,8 @@ const (
 	SPARKMAXDFUPID = 0xdf11
 )
 
+const dfuINTERFACE = 0
+
 func ListDevices() {
 	for _, dev := range GetDevices() {
 		desc := dev.Desc
@@ -44,16 +48,8 @@ func GetDevices() []*gousb.Device {
 	defer ctx.Close()
 
 	devs, err := ctx.OpenDevices(func(desc *gousb.DeviceDesc) bool {
-		for _, cfg := range desc.Configs {
-			for _, intf := range cfg.Interfaces {
-				for _, ifSetting := range intf.AltSettings {
-					if strings.Contains(usbid.Classify(ifSetting), "Device Firmware Update") ||
-						strings.Contains(usbid.Classify(ifSetting), "DFU") {
-						//fmt.Printf("%03d.%03d %s:%s %s\n", desc.Bus, desc.Address, desc.Vendor, desc.Product, usbid.Describe(desc))
-						return true
-					}
-				}
-			}
+		if desc.Vendor == SPARKMAXDFUVID && desc.Product == SPARKMAXDFUPID {
+			return true
 		}
 		return false
 	})
@@ -73,10 +69,26 @@ func GetDevices() []*gousb.Device {
 	return devs
 }
 
-func Init() (err error) {
+type DFUDevice struct {
+	ctx *gousb.Context
+	dev *gousb.Device
+}
+
+func (d DFUDevice) Close() {
+	if d.dev != nil {
+		d.dev.Close()
+	}
+
+	if d.ctx != nil {
+		d.ctx.Close()
+	}
+}
+
+func Init() (device DFUDevice, err error) {
 	// Initialize a new Context.
-	ctx := gousb.NewContext()
-	defer ctx.Close()
+	device.ctx = gousb.NewContext()
+
+	ctx := device.ctx
 
 	// Open any device with a given VID/PID using a convenience function.
 	var found bool
@@ -90,29 +102,66 @@ func Init() (err error) {
 		}
 		return false
 	})
+
+	//TODO: sometimes this throws an unrelated error even if its not related to this particular device
+	//ignore for now as another call below will error if there is truly an error
+	//if err != nil {
+	//	return err
+	//}
+
 	if len(devs) == 0 {
-		return fmt.Errorf("No DFU Device Found")
+		return device, fmt.Errorf("No DFU Device Found")
+	} else if len(devs) > 1 {
+		return device, fmt.Errorf("More than 1 DFU device found")
 	}
 
-	defer func() {
-		for _, dev := range devs {
-			dev.Close()
-		}
-	}()
+	device.dev = devs[0]
 
-	return nil
+	//TODO: This should find the correct interface if possible
+	// Claim the default interface
+	_, done, err := device.getInterface()
+	if err != nil {
+		log.Fatalf("%s.DefaultInterface(): %v", device.dev, err)
+	}
+	defer done()
+
+	return device, device.ClearStatus()
 }
 
-func clearStatus() {
-
+func (d DFUDevice) getInterface() (intf *gousb.Interface, done func(), err error) {
+	return d.dev.DefaultInterface()
 }
 
-func getStatus() {
+func (d DFUDevice) ClearStatus() error {
+	if d.dev == nil {
+		return fmt.Errorf("ClearStatus(): Device not initialized")
+	}
 
+	_, err := d.dev.Control(0x21, cmdCLRSTATUS, 0, dfuINTERFACE, nil)
+
+	return err
 }
 
-func massErase() {
+func (d DFUDevice) GetStatus() (byte, error) {
+	if d.dev == nil {
+		return 0, fmt.Errorf("GetStatus(): Device not initialized")
+	}
 
+	var dfuStatus [32]byte
+
+	_, err := d.dev.Control(0xA1, cmdGETSTATUS, 0, dfuINTERFACE, dfuStatus[:])
+
+	return dfuStatus[4], err
+}
+
+func (d DFUDevice) MassErase() error {
+	if d.dev == nil {
+		return fmt.Errorf("MassErase(): Device not initialized")
+	}
+
+	_, err := d.dev.Control(0x21, cmdDNLOAD, 0, dfuINTERFACE, []byte{0x41})
+
+	return err
 }
 
 func pageErase() {
@@ -139,11 +188,91 @@ func computeCRC() {
 
 }
 
+type MemoryLayout struct {
+	StartAddress uint
+	Pages        uint
+	PageSize     uint
+	Size         uint
+}
+
+func (d DFUDevice) GetMemoryLayout() (mem []MemoryLayout, err error) {
+	//intf, done, _ := d.getInterface()
+	//defer done()
+
+	//TODO: Get the proper config and interface id
+	desc, err := d.dev.InterfaceDescription(1, 0, 0)
+
+	descValues := strings.Split(desc, "/")
+
+	addr, err := strconv.ParseUint(descValues[1], 0, 32)
+	segments := strings.Split(descValues[2], ",")
+
+	segmentRegex := regexp.MustCompile(`(\d+)\*(\d+)(.)(.)`)
+
+	mem = make([]MemoryLayout, len(segments))
+
+	for idx, segment := range segments {
+		segMatches := segmentRegex.FindAllStringSubmatch(segment, 3)
+
+		if segMatches == nil || len(segMatches[0]) < 3 {
+			err = fmt.Errorf("Bad descriptor returned from usb device, unable to parse memory map")
+			return mem, err
+		}
+
+		numPages, err := strconv.ParseUint(segMatches[0][1], 0, 32)
+		if err != nil {
+			continue
+		}
+		pageSize, err := strconv.ParseUint(segMatches[0][2], 0, 32)
+		if err != nil {
+			continue
+		}
+		multiplier := segMatches[0][3]
+
+		if multiplier[0] == 'K' {
+			pageSize *= 1024
+		} else if multiplier[0] == 'M' {
+			pageSize *= 1024 * 1024
+		}
+
+		mem[idx].StartAddress = uint(addr)
+		mem[idx].Pages = uint(numPages)
+		mem[idx].PageSize = uint(pageSize)
+		mem[idx].Size = mem[idx].Pages * mem[idx].PageSize
+
+		addr += uint64(mem[idx].Size)
+	}
+	return
+}
+
+func WriteDFUFile(dfuFile DFUFile, dfuDevice DFUDevice) error {
+	mem, err := dfuDevice.GetMemoryLayout()
+
+	fmt.Printf("%x\r\n", mem[0].StartAddress)
+
+	return err
+}
+
 func Test(filename string) {
-	_, err := ReadDFUFile(filename)
+	//ListDevices()
+
+	dfuDevice, err := Init()
+	defer dfuDevice.Close()
 
 	if err != nil {
-		fmt.Println("DFU File Format Failed: %v", err)
+		log.Fatalf("Failed to initialize ", err)
+	}
+
+	dfu, err := ReadDFUFile(filename)
+
+	if err != nil {
+		fmt.Println("DFU File Format Failed: ", err)
+	}
+
+	err = WriteDFUFile(dfu, dfuDevice)
+
+	if err != nil {
+		fmt.Println("Write DFUFile Failed ", err)
 	}
 }
 
