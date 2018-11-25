@@ -9,11 +9,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/gousb"
 	"github.com/google/gousb/usbid"
 )
 
+//DFU Commands
 const (
 	cmdDETACH    = 0x00
 	cmdDNLOAD    = 0x01
@@ -24,24 +26,73 @@ const (
 	cmdABORT     = 0x06
 )
 
+//DFU States
 const (
-	dfuStatusAppIdle              = 0x00
-	dfuStatusAppDetach            = 0x01
-	dfuStatusDfuIdle              = 0x02
-	dfuStatusDfuDownloadSync      = 0x03
-	dfuStatusDfuDownloadBusy      = 0x04
-	dfuStatusDfuDownloadIdle      = 0x05
-	dfuStatusDfuManifestSync      = 0x06
-	dfuStatusDfuManifest          = 0x07
-	dfuStatusDfuManifestWaitReset = 0x08
-	dfuStatusDfuUploadIdle        = 0x09
-	dfuStatusDfuError             = 0x0a
+	dfuStateAppIdle              = 0x00
+	dfuStateAppDetach            = 0x01
+	dfuStateDfuIdle              = 0x02
+	dfuStateDfuDownloadSync      = 0x03
+	dfuStateDfuDownloadBusy      = 0x04
+	dfuStateDfuDownloadIdle      = 0x05
+	dfuStateDfuManifestSync      = 0x06
+	dfuStateDfuManifest          = 0x07
+	dfuStateDfuManifestWaitReset = 0x08
+	dfuStateDfuUploadIdle        = 0x09
+	dfuStateDfuError             = 0x0a
+)
+
+//DFU Status
+const (
+	dfuStatusOk               = 0x00
+	dfuStatusErrorTarget      = 0x01
+	dfuStatusErrorFile        = 0x02
+	dfuStatusErrorWrite       = 0x03
+	dfuStatusErrorErase       = 0x04
+	dfuStatusErrorCheckErased = 0x05
+	dfuStatusErrorProg        = 0x06
+	dfuStatusErrorVerify      = 0x07
+	dfuStatusErrorAddress     = 0x08
+	dfuStatusErrorNotDone     = 0x09
+	dfuStatusErrorFirmware    = 0x0a
+	dfuStatusErrorVendor      = 0x0b
+	dfuStatusErrorUsbr        = 0x0c
+	dfuStatusErrorPor         = 0x0d
+	dfuStatusErrorUnknown     = 0x0e
+	dfuStatusErrorStalledPkt  = 0x0f
 )
 
 const (
 	SPARKMAXDFUVID = 0x0483
 	SPARKMAXDFUPID = 0xdf11
 )
+
+type dfuStatus struct {
+	bStatus       uint8
+	bwPollTimeout uint
+	bState        uint8
+	iString       uint8
+}
+
+func (d dfuStatus) String() string {
+	return []string{
+		"No error condition is present",
+		"File is not targeted for use by this device",
+		"File is for this device but fails some vendor-specific verification test",
+		"Device is unable to write memory",
+		"Memory erase function failed",
+		"Memory erase check failed",
+		"Program memory function failed",
+		"Programmed memory failed verification",
+		"Cannot program memory due to received address that is out of range",
+		"Received DFU_DNLOAD with wLength = 0, but device does not think it has all of the data yet",
+		"Device’s firmware is corrupt.  It cannot return to run-time (non-DFU) operations",
+		"Vendor-specific error",
+		"Device detected unexpected USB reset signaling",
+		"Device detected unexpected power on reset",
+		"Something went wrong, but the device does not know what it was",
+		"Device stalled an unexpected request",
+	}[d.iString]
+}
 
 const dfuINTERFACE = 0
 
@@ -155,16 +206,29 @@ func (d DFUDevice) ClearStatus() error {
 	return err
 }
 
-func (d DFUDevice) GetStatus() (byte, error) {
+func (d DFUDevice) GetStatus() (status dfuStatus, err error) {
+	status.bStatus = dfuStatusErrorUnknown
+	status.bState = dfuStateDfuError
 	if d.dev == nil {
-		return 0, fmt.Errorf("GetStatus(): Device not initialized")
+		err = fmt.Errorf("In GetStatus(): Device not initialized")
+		return
 	}
 
-	var dfuStatus [12]byte
+	var rawbuf [6]byte
 
-	_, err := d.dev.Control(0xA1, cmdGETSTATUS, 0, dfuINTERFACE, dfuStatus[:])
+	_, err = d.dev.Control(0xA1, cmdGETSTATUS, 0, dfuINTERFACE, rawbuf[:])
 
-	return dfuStatus[4], err
+	if err != nil {
+		err = fmt.Errorf("Control transfer in GetStatus() failed: %v", err)
+		return
+	}
+
+	status.bStatus = rawbuf[0]
+	status.bwPollTimeout = uint(rawbuf[1] | rawbuf[2]<<8 | rawbuf[3]<<16)
+	status.bState = rawbuf[4]
+	status.iString = rawbuf[5]
+
+	return
 }
 
 func (d DFUDevice) MassErase() error {
@@ -178,40 +242,59 @@ func (d DFUDevice) MassErase() error {
 }
 
 func (d DFUDevice) PageErase(addr uint) error {
-	fmt.Printf("Erasing address 0x%x\r\n", addr)
+	//fmt.Printf("Erasing address 0x%x\r\n", addr)
 
 	cmdBuffer := make([]byte, 5)
 	cmdBuffer[0] = 0x41
 
 	binary.LittleEndian.PutUint32(cmdBuffer[1:], uint32(addr))
 
+	//Page erase implemented per STM32 app note AN3156 section 5.3 Erase Command
 	_, err := d.dev.Control(0x21, cmdDNLOAD, 0, dfuINTERFACE, cmdBuffer)
 
 	if err != nil {
-		fmt.Println("Failing here 1...")
-		return err
+		return fmt.Errorf("Control Transfer failed after PageErase 0x%x, %v: ", addr, err)
 	}
 
 	status, err := d.GetStatus()
 
 	if err != nil {
-		fmt.Println("Failing here 2...")
-		return err
+		return fmt.Errorf("Failed to get  status after Page Erase: %v", err)
 	}
 
-	if status != dfuStatusDfuDownloadBusy {
-		return fmt.Errorf("Failed to erase dfuStatusDfuDownloadBusy 0x%x", addr)
+	//First status should always return dfuStateDfuDownloadBusy, this starts the erase
+	if status.bState != dfuStateDfuDownloadBusy {
+		return fmt.Errorf("Wrong state after PageErase command, expected dfuStateDfuDownloadBusy 0x%x", addr)
 	}
 
-	status, err = d.GetStatus()
+	//TODO: Add additional condition for timeout
+	for status.bState == dfuStateDfuDownloadBusy {
+		//Status command tells the correct polling timeout
+		time.Sleep(time.Millisecond * time.Duration(status.bwPollTimeout))
 
-	if err != nil {
-		fmt.Println("Failing here 3...")
-		return err
-	}
+		status, err = d.GetStatus()
 
-	if status != dfuStatusDfuDownloadIdle {
-		return fmt.Errorf("Failed to erase dfuStatusDfuDownloadIdle 0x%x", addr)
+		if err != nil {
+			fmt.Println("Failing here 3...")
+			return fmt.Errorf("Failed at GetStatus() after page erase sent: %v", err)
+		}
+
+		//Handle unexpected states
+		if status.bState != dfuStateDfuDownloadIdle && status.bState != dfuStateDfuDownloadBusy {
+			errorString := fmt.Sprintf("Wrong state after PageErase command for address 0x%x ", addr)
+			if status.bState == dfuStateDfuError {
+				switch bStatus := status.bStatus; bStatus {
+				case dfuStatusErrorTarget:
+					return fmt.Errorf("%s, wrong or unsupported page address, code string: %s", errorString, status)
+				case dfuStatusErrorVendor:
+					return fmt.Errorf("%s, attempting to page erase a read protected sector, code string: %s", errorString, status)
+				default:
+					return fmt.Errorf("%s, unexpected status: %d, code string: %s", errorString, status.bStatus, status)
+				}
+			} else {
+				return fmt.Errorf("%s, unexpected state: %d, code string: %s", errorString, status.bState, status)
+			}
+		}
 	}
 
 	return err
