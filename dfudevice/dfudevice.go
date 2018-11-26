@@ -260,6 +260,7 @@ func (d DFUDevice) dnloadCommand(wValue uint16, buffer []byte) error {
 	var status dfuStatus
 	var err error
 
+	//TODO: Implement timeouts
 	for true {
 		//Check that the device is in the IDLE or DNLOAD-IDLE states before proceeding
 		status, err = d.GetStatus()
@@ -330,7 +331,7 @@ func (d DFUDevice) PageErase(addr uint) error {
 	err := d.dnloadSpecialCommand(dnloadCmdErase, cmdBuffer)
 
 	if err != nil {
-		return fmt.Errorf("Page Erase Error: %v", err)
+		return fmt.Errorf("Page Erase Error address 0x%x: %v", addr, err)
 	}
 	return nil
 }
@@ -350,7 +351,7 @@ func (d DFUDevice) SetAddress(addr uint) error {
 	err := d.dnloadSpecialCommand(dnloadCmdSetAddress, cmdBuffer)
 
 	if err != nil {
-		return fmt.Errorf("Set Address Error: %v", err)
+		return fmt.Errorf("Set Address 0x%x Error: %v", addr, err)
 	}
 	return nil
 }
