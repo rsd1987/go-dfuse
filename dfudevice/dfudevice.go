@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/gousb"
-	"github.com/google/gousb/usbid"
+	"github.com/willtoth/go-dfu/dfufile"
 )
 
 //DFU Commands
@@ -61,11 +60,6 @@ const (
 	dfuStatusErrorStalledPkt  = 0x0f
 )
 
-const (
-	SPARKMAXDFUVID = 0x0483
-	SPARKMAXDFUPID = 0xdf11
-)
-
 type dfuStatus struct {
 	bStatus       uint8
 	bwPollTimeout uint
@@ -94,8 +88,15 @@ func (d dfuStatus) String() string {
 	}[d.iString]
 }
 
+func (d dfuStatus) Wait() {
+	//Status command tells the correct polling timeout
+	time.Sleep(time.Millisecond * time.Duration(d.bwPollTimeout))
+}
+
 const dfuINTERFACE = 0
 
+//TODO: Implement a list mechanism which lists and devices which report to be in DFU mode
+/*
 func ListDevices() {
 	for _, dev := range GetDevices() {
 		desc := dev.Desc
@@ -131,6 +132,7 @@ func GetDevices() []*gousb.Device {
 
 	return devs
 }
+*/
 
 type DFUDevice struct {
 	ctx *gousb.Context
@@ -147,7 +149,7 @@ func (d DFUDevice) Close() {
 	}
 }
 
-func Init() (device DFUDevice, err error) {
+func Open(vid, pid gousb.ID) (device DFUDevice, err error) {
 	// Initialize a new Context.
 	device.ctx = gousb.NewContext()
 
@@ -159,7 +161,7 @@ func Init() (device DFUDevice, err error) {
 		if found {
 			return false
 		}
-		if desc.Vendor == SPARKMAXDFUVID && desc.Product == SPARKMAXDFUPID {
+		if desc.Vendor == vid && desc.Product == pid {
 			found = true
 			return true
 		}
@@ -224,64 +226,85 @@ func (d DFUDevice) GetStatus() (status dfuStatus, err error) {
 	}
 
 	status.bStatus = rawbuf[0]
-	status.bwPollTimeout = uint(rawbuf[1] | rawbuf[2]<<8 | rawbuf[3]<<16)
+	status.bwPollTimeout = uint(rawbuf[1]) | uint(rawbuf[2])<<8 | uint(rawbuf[3])<<16
 	status.bState = rawbuf[4]
 	status.iString = rawbuf[5]
+
+	//Wait the bwPollTimeout() time TODO: Should this be here or up to the implementation?
+	status.Wait()
 
 	return
 }
 
-func (d DFUDevice) MassErase() error {
-	if d.dev == nil {
-		return fmt.Errorf("MassErase(): Device not initialized")
-	}
+const (
+	dnloadCmdErase         = 0x41
+	dnloadCmdReadUnprotect = 0x92 //not implemented
+	dnloadCmdSetAddress    = 0x21
+)
 
-	_, err := d.dev.Control(0x21, cmdDNLOAD, 0, dfuINTERFACE, []byte{0x41})
+func (d DFUDevice) dnloadSpecialCommand(command byte, buffer []byte) error {
+	cmdBuffer := make([]byte, len(buffer)+1)
 
-	return err
+	cmdBuffer[0] = command
+	copy(cmdBuffer[1:], buffer)
+
+	return d.dnloadCommand(0, cmdBuffer)
 }
 
-func (d DFUDevice) PageErase(addr uint) error {
-	//fmt.Printf("Erasing address 0x%x\r\n", addr)
-
-	cmdBuffer := make([]byte, 5)
-	cmdBuffer[0] = 0x41
-
-	binary.LittleEndian.PutUint32(cmdBuffer[1:], uint32(addr))
-
-	//Page erase implemented per STM32 app note AN3156 section 5.3 Erase Command
-	_, err := d.dev.Control(0x21, cmdDNLOAD, 0, dfuINTERFACE, cmdBuffer)
-
-	if err != nil {
-		return fmt.Errorf("Control Transfer failed after PageErase 0x%x, %v: ", addr, err)
+//dnload requests implemented per STM32 app note AN3156
+func (d DFUDevice) dnloadCommand(wValue uint16, buffer []byte) error {
+	if d.dev == nil {
+		return fmt.Errorf("dnloadSpecialCommand(): Device not initialized")
 	}
 
-	status, err := d.GetStatus()
+	var status dfuStatus
+	var err error
 
-	if err != nil {
-		return fmt.Errorf("Failed to get  status after Page Erase: %v", err)
+	for true {
+		//Check that the device is in the IDLE or DNLOAD-IDLE states before proceeding
+		status, err = d.GetStatus()
+
+		if err != nil {
+			return fmt.Errorf("Initial GetStatus() failed in dnload command: %v: ", err)
+		}
+
+		if status.bState != dfuStateDfuIdle && status.bState != dfuStateDfuDownloadIdle {
+			fmt.Printf("State is not set, found to be: %d, attempting to clear status...\r\n", status.bState)
+			d.ClearStatus()
+		} else {
+			break
+		}
 	}
 
-	//First status should always return dfuStateDfuDownloadBusy, this starts the erase
+	_, err = d.dev.Control(0x21, cmdDNLOAD, wValue, dfuINTERFACE, buffer)
+
+	if err != nil {
+		return fmt.Errorf("Control Transfer failed after initial dnload command: %v: ", err)
+	}
+
+	status, err = d.GetStatus()
+
+	if err != nil {
+		return fmt.Errorf("Failed to get status after dnload command: %d, %v", err)
+	}
+
+	//First status should always return dfuStateDfuDownloadBusy, this starts the operation
 	if status.bState != dfuStateDfuDownloadBusy {
-		return fmt.Errorf("Wrong state after PageErase command, expected dfuStateDfuDownloadBusy 0x%x", addr)
+		return fmt.Errorf("Wrong state after dnload command expected dfuStateDfuDownloadBusy")
 	}
 
 	//TODO: Add additional condition for timeout
 	for status.bState == dfuStateDfuDownloadBusy {
-		//Status command tells the correct polling timeout
-		time.Sleep(time.Millisecond * time.Duration(status.bwPollTimeout))
 
 		status, err = d.GetStatus()
 
 		if err != nil {
-			fmt.Println("Failing here 3...")
-			return fmt.Errorf("Failed at GetStatus() after page erase sent: %v", err)
+			return fmt.Errorf("Failed while polling status during dnload command: %v", err)
 		}
 
 		//Handle unexpected states
 		if status.bState != dfuStateDfuDownloadIdle && status.bState != dfuStateDfuDownloadBusy {
-			errorString := fmt.Sprintf("Wrong state after PageErase command for address 0x%x ", addr)
+			errorString := fmt.Sprintf("Wrong state after dnl command ")
 			if status.bState == dfuStateDfuError {
 				switch bStatus := status.bStatus; bStatus {
 				case dfuStatusErrorTarget:
@@ -296,12 +319,40 @@ func (d DFUDevice) PageErase(addr uint) error {
 			}
 		}
 	}
-
 	return err
 }
 
-func setAddress() {
+func (d DFUDevice) PageErase(addr uint) error {
+	cmdBuffer := make([]byte, 4)
 
+	binary.LittleEndian.PutUint32(cmdBuffer[:], uint32(addr))
+
+	err := d.dnloadSpecialCommand(dnloadCmdErase, cmdBuffer)
+
+	if err != nil {
+		return fmt.Errorf("Page Erase Error: %v", err)
+	}
+	return nil
+}
+
+func (d DFUDevice) MassErase() error {
+	err := d.dnloadSpecialCommand(dnloadCmdErase, []byte{})
+
+	if err != nil {
+		return fmt.Errorf("Mass Erase Error: %v", err)
+	}
+	return nil
+}
+
+func (d DFUDevice) SetAddress(addr uint) error {
+	cmdBuffer := make([]byte, 4)
+	binary.LittleEndian.PutUint32(cmdBuffer[:], uint32(addr))
+	err := d.dnloadSpecialCommand(dnloadCmdSetAddress, cmdBuffer)
+
+	if err != nil {
+		return fmt.Errorf("Set Address Error: %v", err)
+	}
+	return nil
 }
 
 func (d DFUDevice) WriteMemory(addr uint, data []byte) error {
@@ -377,7 +428,7 @@ func (d DFUDevice) GetMemoryLayout() (mem []MemoryLayout, err error) {
 	return
 }
 
-func WriteDFUImage(dfuImage DFUImage, dfuDevice DFUDevice) error {
+func WriteDFUImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 	massErase := false
 
 	mem, err := dfuDevice.GetMemoryLayout()
@@ -439,199 +490,3 @@ func WriteDFUImage(dfuImage DFUImage, dfuDevice DFUDevice) error {
 
 	return err
 }
-
-func Test(filename string) {
-	//ListDevices()
-
-	dfuDevice, err := Init()
-	defer dfuDevice.Close()
-
-	if err != nil {
-		log.Fatalf("Failed to initialize ", err)
-	}
-
-	dfu, err := ReadDFUFile(filename)
-
-	if err != nil {
-		fmt.Println("DFU File Format Failed: ", err)
-	}
-
-	err = WriteDFUImage(dfu.Images[0], dfuDevice)
-
-	if err != nil {
-		fmt.Println("Write DFUFile Failed ", err)
-	}
-}
-
-type DFUTarget struct {
-	Prefix struct {
-		Address uint32
-		Size    uint32
-	}
-	Elements []byte
-}
-
-type DFUImage struct {
-	Prefix struct {
-		Signature  [6]byte
-		AltSetting bool
-		IsNamed    uint32
-		Name       [255]byte
-		Size       uint32
-		Elements   uint32
-	}
-	Targets []DFUTarget
-}
-
-type DFUFile struct {
-	Prefix struct {
-		Signature [5]byte
-		Version   uint8
-		Size      uint32
-		Targets   uint8
-	}
-
-	Images []DFUImage
-
-	Suffix struct {
-		DeviceVersion uint16
-		Product       uint16
-		Vendor        uint16
-		DfuFormat     uint16
-		Ufd           [3]byte
-		Length        uint8
-		Crc32         uint32
-	}
-}
-
-func ReadDFUFile(filename string) (DFUFile, error) {
-	var fileData DFUFile
-
-	fileHandle, err := os.Open(filename)
-	defer fileHandle.Close()
-
-	//TODO: Verbose output
-	//fmt.Println(filename)
-
-	if err != nil {
-		return fileData, err
-	}
-
-	//   <   little endian
-	//   5s  char[5]     signature   "DfuSe"
-	//   B   uint8_t     version     1
-	//   I   uint32_t    size        Size of the DFU file (not including suffix)
-	//   B   uint8_t     targets     Number of targets
-	err = binary.Read(fileHandle, binary.LittleEndian, &fileData.Prefix)
-
-	if err != nil {
-		return fileData, err
-	}
-
-	if string(fileData.Prefix.Signature[:]) != "DfuSe" {
-		return fileData, fmt.Errorf("Error in image prefix, dfu file failed")
-	}
-
-	//TODO: Verbose output
-	//fmt.Printf("Signature: %x, v%d, image size: %d, targets: %d\r\n",
-	//	fileData.Prefix.Signature,
-	//	fileData.Prefix.Version,
-	//	fileData.Prefix.Size,
-	//	fileData.Prefix.Targets)
-
-	fileData.Images = make([]DFUImage, fileData.Prefix.Targets)
-
-	for imageIdx := range fileData.Images {
-
-		image := &fileData.Images[imageIdx]
-
-		// Decode the Image Prefix
-		//   <   little endian
-		//   6s      char[6]     signature   "Target"
-		//   B       uint8_t     altsetting
-		//   I       uint32_t    named       bool indicating if a name was used
-		//   255s    char[255]   name        name of the target
-		//   I       uint32_t    size        size of image (not incl prefix)
-		//   I       uint32_t    elements    Number of elements in the image
-		err = binary.Read(fileHandle, binary.LittleEndian, &image.Prefix)
-
-		if err != nil {
-			return fileData, err
-		}
-
-		if string(image.Prefix.Signature[:]) != "Target" {
-			return fileData, fmt.Errorf("Error in image prefix, dfu file failed")
-		}
-
-		//TODO: Verbose output
-		//fmt.Printf("Signature: %x, num: %d, alt settings: %d, name: %s, size: %d, elements: %d\r\n",
-		//	image.Prefix.Signature,
-		//	image.Prefix.IsNamed,
-		//	image.Prefix.AltSetting,
-		//	image.Prefix.Name,
-		//	image.Prefix.Size,
-		//	image.Prefix.Elements)
-
-		image.Targets = make([]DFUTarget, image.Prefix.Elements)
-
-		for targetIdx := range image.Targets {
-
-			// Decode target prefix
-			//   <   little endian
-			//   I   uint32_t    element address
-			//   I   uint32_t    element size
-			err = binary.Read(fileHandle, binary.LittleEndian, &image.Targets[targetIdx].Prefix)
-			if err != nil {
-				return fileData, err
-			}
-
-			image.Targets[targetIdx].Elements = make([]byte, image.Targets[targetIdx].Prefix.Size)
-			_, err = fileHandle.Read(image.Targets[targetIdx].Elements)
-
-			if err != nil {
-				return fileData, err
-			}
-		}
-	}
-
-	//   <   little endian
-	//   H   uint16_t    device  Firmware version
-	//   H   uint16_t    product
-	//   H   uint16_t    vendor
-	//   H   uint16_t    dfu     0x11a   (DFU file format version)
-	//   3s  char[3]     ufd     'UFD'
-	//   B   uint8_t     len     16
-	//   I   uint32_t    crc32
-	err = binary.Read(fileHandle, binary.LittleEndian, &fileData.Suffix)
-
-	//TODO: Verbose output
-	//fmt.Printf("version: %x, product: %04x, vendor: %04x, format: %d, length: %d, crc32: %d\r\n",
-	//	fileData.Suffix.DeviceVersion,
-	//	fileData.Suffix.Product,
-	//	fileData.Suffix.Vendor,
-	//	fileData.Suffix.DfuFormat,
-	//	fileData.Suffix.Length,
-	//	fileData.Suffix.Crc32)
-
-	if string(fileData.Suffix.Ufd[:]) != "UFD" {
-		return fileData, fmt.Errorf("Error in suffix prefix, dfu file failed")
-	}
-
-	//TODO: check CRC
-
-	return fileData, nil
-}
-
-/*
-func (d DfuDevice) Open() {
-
-}
-
-func (d DfuDevice) Close() {
-
-}
-
-func (d DfuDevice) Detatch() {
-
-}
-*/
