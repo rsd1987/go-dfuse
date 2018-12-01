@@ -357,7 +357,60 @@ func (d DFUDevice) SetAddress(addr uint) error {
 }
 
 func (d DFUDevice) WriteMemory(addr uint, data []byte) error {
-	return nil
+	err := d.SetAddress(addr)
+
+	if err != nil {
+		return fmt.Errorf("Error in SetAddress of Write Memory: %v", err)
+	}
+
+	//block size, write in max block size (2048 bytes)
+	transferSize := 2048
+	bytesLeftToTransfer := len(data)
+
+	//Block num starts at 2 to signal dnload() that it is a write command per spec
+	blockNum := uint16(0)
+
+	if bytesLeftToTransfer <= transferSize {
+		err = d.dnloadCommand(blockNum+2, data)
+		return err
+	}
+
+	//address = ((wValue - 2) * transferSize) + addr
+	for bytesLeftToTransfer > 0 {
+		//thisAddr := int(blockNum)*transferSize + int(addr)
+		//final transfer is less than transfer size, must reset address
+		if bytesLeftToTransfer < transferSize {
+			dataSlice := data[transferSize*int(blockNum):]
+			err := d.SetAddress(addr)
+
+			if err != nil {
+				return fmt.Errorf("Error in final SetAddress of Write Memory: %v", err)
+			}
+
+			//fmt.Printf("Writing to 0x%x, bytes left : %d\r\n", thisAddr, 0)
+			err = d.dnloadCommand(blockNum+2, dataSlice)
+			if err != nil {
+				return fmt.Errorf("Write failed after final dnload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)
+			}
+			return err
+		}
+		dataSlice := data[transferSize*int(blockNum) : transferSize*(int(blockNum)+1)]
+
+		bytesLeftToTransfer -= transferSize
+
+		//fmt.Printf("Writing to 0x%x, bytes left : %d\r\n", thisAddr, bytesLeftToTransfer)
+
+		//Transfer next block
+		err = d.dnloadCommand(blockNum+2, dataSlice)
+
+		blockNum++
+
+		if err != nil {
+			return fmt.Errorf("Write failed after dnload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)
+		}
+	}
+
+	return err
 }
 
 func writePage() {
@@ -484,8 +537,11 @@ func WriteDFUImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 		}
 	}
 
+	fmt.Println("Writing pages...")
+
 	//By this point, the appropriate amount of flash has been erased, write each target
 	for _, target := range dfuImage.Targets {
+		fmt.Printf("Writing to address 0x%x\r\n", target.Prefix.Address)
 		dfuDevice.WriteMemory(uint(target.Prefix.Address), target.Elements)
 	}
 
