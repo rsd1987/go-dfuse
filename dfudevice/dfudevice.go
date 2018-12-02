@@ -251,12 +251,7 @@ func (d DFUDevice) dnloadSpecialCommand(command byte, buffer []byte) error {
 	return d.dnloadCommand(0, cmdBuffer)
 }
 
-//dnload requests implemented per STM32 app note AN3156
-func (d DFUDevice) dnloadCommand(wValue uint16, buffer []byte) error {
-	if d.dev == nil {
-		return fmt.Errorf("dnloadSpecialCommand(): Device not initialized")
-	}
-
+func (d DFUDevice) dnloadWaitOnIdle() error {
 	var status dfuStatus
 	var err error
 
@@ -270,11 +265,29 @@ func (d DFUDevice) dnloadCommand(wValue uint16, buffer []byte) error {
 		}
 
 		if status.bState != dfuStateDfuIdle && status.bState != dfuStateDfuDownloadIdle {
-			fmt.Printf("State is not set, found to be: %d, attempting to clear status...\r\n", status.bState)
+			//fmt.Printf("State is not set for dnload, found to be: %d, string %s\r\nAttempting to clear status...\r\n", status.bState, status)
 			d.ClearStatus()
 		} else {
 			break
 		}
+	}
+
+	return err
+}
+
+//dnload requests implemented per STM32 app note AN3156
+func (d DFUDevice) dnloadCommand(wValue uint16, buffer []byte) error {
+	if d.dev == nil {
+		return fmt.Errorf("dnloadSpecialCommand(): Device not initialized")
+	}
+
+	var status dfuStatus
+	var err error
+
+	err = d.dnloadWaitOnIdle()
+
+	if err != nil {
+		return err
 	}
 
 	_, err = d.dev.Control(0x21, cmdDNLOAD, wValue, dfuINTERFACE, buffer)
@@ -311,7 +324,7 @@ func (d DFUDevice) dnloadCommand(wValue uint16, buffer []byte) error {
 				case dfuStatusErrorTarget:
 					return fmt.Errorf("%s, wrong or unsupported page address, code string: %s", errorString, status)
 				case dfuStatusErrorVendor:
-					return fmt.Errorf("%s, attempting to page erase a read protected sector, code string: %s", errorString, status)
+					return fmt.Errorf("%s, attempting dnload cmd to a read protected sector, code string: %s", errorString, status)
 				default:
 					return fmt.Errorf("%s, unexpected status: %d, code string: %s", errorString, status.bStatus, status)
 				}
@@ -395,30 +408,149 @@ func (d DFUDevice) WriteMemory(addr uint, data []byte) error {
 			return err
 		}
 		dataSlice := data[transferSize*int(blockNum) : transferSize*(int(blockNum)+1)]
-
-		bytesLeftToTransfer -= transferSize
-
 		//fmt.Printf("Writing to 0x%x, bytes left : %d\r\n", thisAddr, bytesLeftToTransfer)
 
 		//Transfer next block
 		err = d.dnloadCommand(blockNum+2, dataSlice)
 
-		blockNum++
-
 		if err != nil {
 			return fmt.Errorf("Write failed after dnload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)
+		}
+		bytesLeftToTransfer -= transferSize
+		blockNum++
+	}
+
+	return err
+}
+
+//func writePage() {
+//}
+
+func (d DFUDevice) ExitDFU(addr uint) error {
+	err := d.SetAddress(addr)
+
+	if err != nil {
+		return fmt.Errorf("Error in exit DFU: %v", err)
+	}
+
+	d.dnloadWaitOnIdle()
+
+	//Transfer next block
+	_, err = d.dev.Control(0x21, cmdDNLOAD, 0, dfuINTERFACE, nil)
+
+	status, err := d.GetStatus()
+
+	if status.bState != dfuStateDfuManifest {
+		return fmt.Errorf("Failed to leave DFU mode: %v", err)
+	}
+
+	//On success, close device
+	d.Close()
+	return nil
+}
+
+func (d DFUDevice) uploadWaitOnIdle() error {
+	var status dfuStatus
+	var err error
+
+	//TODO: Implement timeouts
+	for true {
+		//Check that the device is in the IDLE or DNLOAD-IDLE states before proceeding
+		status, err = d.GetStatus()
+
+		if err != nil {
+			return fmt.Errorf("Initial GetStatus() failed in dnload command: %v: ", err)
+		}
+
+		if status.bState != dfuStateDfuIdle && status.bState != dfuStateDfuUploadIdle {
+			//fmt.Printf("State is not set for upload, found to be: %d, string: %s\r\nAttempting to clear status...\r\n", status.bState, status)
+			d.ClearStatus()
+		} else {
+			break
 		}
 	}
 
 	return err
 }
 
-func writePage() {
+func (d DFUDevice) ReadMemory(addr, length uint) ([]byte, error) {
+	data := make([]byte, length)
 
-}
+	if length == 0 {
+		return data, nil
+	}
 
-func exitDFU() {
+	err := d.SetAddress(addr)
 
+	if err != nil {
+		return data, fmt.Errorf("Error in Read Memory: %v", err)
+	}
+
+	//block size, write in max block size (2048 bytes)
+	transferSize := 2048
+	blockNum := uint16(0)
+	bytesLeftToTransfer := int(length)
+
+	//Entire buffer fits in a single
+	if int(length) < transferSize {
+
+		err = d.uploadWaitOnIdle()
+
+		if err != nil {
+			return data, err
+		}
+
+		_, err = d.dev.Control(0x21, cmdUPLOAD, blockNum+2, dfuINTERFACE, data)
+		return data, err
+	}
+
+	//address = ((wValue - 2) * transferSize) + addr
+	for bytesLeftToTransfer > 0 {
+
+		err = d.uploadWaitOnIdle()
+
+		if err != nil {
+			return data, err
+		}
+
+		//thisAddr := int(blockNum)*transferSize + int(addr)
+		//final transfer is less than transfer size, must reset address
+		if bytesLeftToTransfer < transferSize {
+			dataSlice := data[transferSize*int(blockNum):]
+			err := d.SetAddress(addr)
+
+			if err != nil {
+				return nil, fmt.Errorf("Error in final SetAddress of Read Memory: %v", err)
+			}
+
+			err = d.uploadWaitOnIdle()
+
+			if err != nil {
+				return data, err
+			}
+
+			//fmt.Printf("Reading from 0x%x, bytes left : %d\r\n", thisAddr, 0)
+			_, err = d.dev.Control(0x21, cmdUPLOAD, blockNum+2, dfuINTERFACE, dataSlice)
+			if err != nil {
+				return nil, fmt.Errorf("Read failed after final upload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)
+			}
+			return data, err
+		}
+
+		dataSlice := data[transferSize*int(blockNum) : transferSize*(int(blockNum)+1)]
+
+		//fmt.Printf("Reading from 0x%x, bytes left : %d\r\n", thisAddr, bytesLeftToTransfer)
+
+		//Transfer next block
+		_, err = d.dev.Control(0x21, cmdUPLOAD, blockNum+2, dfuINTERFACE, dataSlice)
+
+		if err != nil {
+			return nil, fmt.Errorf("Read failed after dnload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)
+		}
+		bytesLeftToTransfer -= transferSize
+		blockNum++
+	}
+	return data, err
 }
 
 func computeCRC() {
@@ -541,7 +673,7 @@ func WriteDFUImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 
 	//By this point, the appropriate amount of flash has been erased, write each target
 	for _, target := range dfuImage.Targets {
-		fmt.Printf("Writing to address 0x%x\r\n", target.Prefix.Address)
+		//fmt.Printf("Writing to address 0x%x\r\n", target.Prefix.Address)
 		dfuDevice.WriteMemory(uint(target.Prefix.Address), target.Elements)
 	}
 

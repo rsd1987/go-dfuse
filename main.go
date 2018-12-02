@@ -17,8 +17,8 @@ const (
 func main() {
 	filename := os.Args[1]
 
-	dfuDevice, err := dfudevice.Open(SPARKMAXDFUVID, SPARKMAXDFUPID)
-	defer dfuDevice.Close()
+	dev, err := dfudevice.Open(SPARKMAXDFUVID, SPARKMAXDFUPID)
+	defer dev.Close()
 
 	if err != nil {
 		log.Fatalf("Failed to initialize ", err)
@@ -30,9 +30,17 @@ func main() {
 		fmt.Println("DFU File Format Failed: ", err)
 	}
 
-	err = dfudevice.WriteDFUImage(dfu.Images[0], dfuDevice)
+	err = dfudevice.WriteDFUImage(dfu.Images[0], dev)
 
 	if err != nil {
 		fmt.Println("Write DFUFile Failed ", err)
+	}
+
+	data, err := dev.ReadMemory(0x08000000, 2048*5+1000)
+
+	if err != nil {
+		fmt.Println("Read Memory Failed: %v", err)
+	} else {
+		fmt.Println(len(data))
 	}
 }
