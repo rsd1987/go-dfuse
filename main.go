@@ -29,18 +29,16 @@ func main() {
 	if err != nil {
 		fmt.Println("DFU File Format Failed: ", err)
 	}
+	/*
+		err = dfudevice.WriteDFUImage(dfu.Images[0], dev)
 
-	err = dfudevice.WriteDFUImage(dfu.Images[0], dev)
+		if err != nil {
+			fmt.Println("Write DFUFile Failed ", err)
+		}
+	*/
+	verify, err := dfudevice.VerifyDFUImage(dfu.Images[0], dev)
 
-	if err != nil {
-		fmt.Println("Write DFUFile Failed ", err)
-	}
-
-	data, err := dev.ReadMemory(0x08000000, 2048*5+1000)
-
-	if err != nil {
-		fmt.Println("Read Memory Failed: %v", err)
-	} else {
-		fmt.Println(len(data))
+	if err != nil || verify == false {
+		fmt.Println("Failed to verify DFU Image: ", err)
 	}
 }

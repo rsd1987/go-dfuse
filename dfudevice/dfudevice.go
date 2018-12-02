@@ -4,14 +4,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/gousb"
-	"github.com/willtoth/go-dfu/dfufile"
 )
 
 //DFU Commands
@@ -500,7 +498,7 @@ func (d DFUDevice) ReadMemory(addr, length uint) ([]byte, error) {
 			return data, err
 		}
 
-		_, err = d.dev.Control(0x21, cmdUPLOAD, blockNum+2, dfuINTERFACE, data)
+		_, err = d.dev.Control(0xA1, cmdUPLOAD, blockNum+2, dfuINTERFACE, data)
 		return data, err
 	}
 
@@ -530,7 +528,7 @@ func (d DFUDevice) ReadMemory(addr, length uint) ([]byte, error) {
 			}
 
 			//fmt.Printf("Reading from 0x%x, bytes left : %d\r\n", thisAddr, 0)
-			_, err = d.dev.Control(0x21, cmdUPLOAD, blockNum+2, dfuINTERFACE, dataSlice)
+			_, err = d.dev.Control(0xA1, cmdUPLOAD, blockNum+2, dfuINTERFACE, dataSlice)
 			if err != nil {
 				return nil, fmt.Errorf("Read failed after final upload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)
 			}
@@ -542,7 +540,7 @@ func (d DFUDevice) ReadMemory(addr, length uint) ([]byte, error) {
 		//fmt.Printf("Reading from 0x%x, bytes left : %d\r\n", thisAddr, bytesLeftToTransfer)
 
 		//Transfer next block
-		_, err = d.dev.Control(0x21, cmdUPLOAD, blockNum+2, dfuINTERFACE, dataSlice)
+		_, err = d.dev.Control(0xA1, cmdUPLOAD, blockNum+2, dfuINTERFACE, dataSlice)
 
 		if err != nil {
 			return nil, fmt.Errorf("Read failed after dnload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)
@@ -612,70 +610,4 @@ func (d DFUDevice) GetMemoryLayout() (mem []MemoryLayout, err error) {
 		addr += uint64(mem[idx].Size)
 	}
 	return
-}
-
-func WriteDFUImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
-	massErase := false
-
-	mem, err := dfuDevice.GetMemoryLayout()
-
-	//TODO: This should search mem[] for the correct location
-	memory := mem[0]
-
-	//Check that target fits within mem
-	//if uint(dfuImage.Prefix.Address+dfuTarget.Prefix.Size) > mem[0].StartAddress+mem[0].Size {
-	//	return fmt.Errorf("Target address of %x and size of %d will not fit within specified device.",
-	//		dfuTarget.Prefix.Address, dfuTarget.Prefix.Size)
-	//}
-
-	//fmt.Printf("Writing to device starting at page 0x%x\r\n", dfuTarget.Prefix.Address)
-
-	fmt.Println("Erasing pages...")
-
-	if massErase == true {
-		err = dfuDevice.MassErase()
-
-		if err != nil {
-			return err
-		}
-	} else {
-		for _, target := range dfuImage.Targets {
-			startPage := -1
-			pagesToErase := uint(math.Ceil(float64(target.Prefix.Size) / float64(memory.PageSize)))
-
-			if int(target.Prefix.Size) != len(target.Elements) {
-				return fmt.Errorf("Mismatch target size, size claims %d, but has %d elements", target.Prefix.Size, len(target.Elements))
-			}
-
-			for idx := uint(0); idx < memory.Pages; idx++ {
-				//Target should be at page boundary
-				if memory.StartAddress+(idx*memory.PageSize) == uint(target.Prefix.Address) {
-					startPage = int(idx)
-					break
-				}
-			}
-
-			if startPage == -1 {
-				return fmt.Errorf("Failed to find target address %x in device memory", target.Prefix.Address)
-			} else {
-				for numPages := 0; numPages < int(pagesToErase); numPages++ {
-					err = dfuDevice.PageErase(uint(target.Prefix.Address) + (uint(startPage+numPages) * memory.PageSize))
-
-					if err != nil {
-						return err
-					}
-				}
-			}
-		}
-	}
-
-	fmt.Println("Writing pages...")
-
-	//By this point, the appropriate amount of flash has been erased, write each target
-	for _, target := range dfuImage.Targets {
-		//fmt.Printf("Writing to address 0x%x\r\n", target.Prefix.Address)
-		dfuDevice.WriteMemory(uint(target.Prefix.Address), target.Elements)
-	}
-
-	return err
 }
