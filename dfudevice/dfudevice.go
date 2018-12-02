@@ -442,9 +442,7 @@ func (d DFUDevice) ExitDFU(addr uint) error {
 		return fmt.Errorf("Failed to leave DFU mode: %v", err)
 	}
 
-	//On success, close device
-	d.Close()
-	return nil
+	return err
 }
 
 func (d DFUDevice) uploadWaitOnIdle() error {

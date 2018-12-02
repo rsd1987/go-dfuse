@@ -8,7 +8,7 @@ import (
 	"github.com/willtoth/go-dfu/dfufile"
 )
 
-func WriteDFUImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
+func WriteImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 	massErase := false
 
 	mem, err := dfuDevice.GetMemoryLayout()
@@ -24,7 +24,7 @@ func WriteDFUImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 
 	//fmt.Printf("Writing to device starting at page 0x%x\r\n", dfuTarget.Prefix.Address)
 
-	fmt.Println("Erasing pages...")
+	//fmt.Println("Erasing pages...")
 
 	if massErase == true {
 		err = dfuDevice.MassErase()
@@ -63,7 +63,7 @@ func WriteDFUImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 		}
 	}
 
-	fmt.Println("Writing pages...")
+	//fmt.Println("Writing pages...")
 
 	//By this point, the appropriate amount of flash has been erased, write each target
 	for _, target := range dfuImage.Targets {
@@ -74,7 +74,7 @@ func WriteDFUImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 	return err
 }
 
-func VerifyDFUImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) (bool, error) {
+func VerifyImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) (bool, error) {
 	for _, target := range dfuImage.Targets {
 		deviceData, err := dfuDevice.ReadMemory(uint(target.Prefix.Address), uint(target.Prefix.Size))
 
