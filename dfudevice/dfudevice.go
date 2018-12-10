@@ -135,6 +135,12 @@ func GetDevices() []*gousb.Device {
 type DFUDevice struct {
 	ctx *gousb.Context
 	dev *gousb.Device
+
+	progressBars progressList
+}
+
+func (d *DFUDevice) RegisterProgress(progress Progress) {
+	d.progressBars.add(progress)
 }
 
 func (d DFUDevice) Close() {
@@ -334,6 +340,24 @@ func (d DFUDevice) dnloadCommand(wValue uint16, buffer []byte) error {
 	return err
 }
 
+func (d DFUDevice) MultiPageErase(addr, startPage, pagesToErase, pageSize uint, progressMessage string) error {
+	d.progressBars.setStatus(progressMessage)
+	d.progressBars.setMax(pagesToErase)
+	d.progressBars.setIncrement(1)
+	d.progressBars.reset()
+
+	for numPages := uint(0); numPages < pagesToErase; numPages++ {
+		err := d.PageErase(addr + ((startPage + numPages) * pageSize))
+
+		if err != nil {
+			return err
+		}
+
+		d.progressBars.increment()
+	}
+	return nil
+}
+
 func (d DFUDevice) PageErase(addr uint) error {
 	cmdBuffer := make([]byte, 4)
 
@@ -367,7 +391,7 @@ func (d DFUDevice) SetAddress(addr uint) error {
 	return nil
 }
 
-func (d DFUDevice) WriteMemory(addr uint, data []byte) error {
+func (d DFUDevice) WriteMemory(addr uint, data []byte, progressMessage string) error {
 	err := d.SetAddress(addr)
 
 	if err != nil {
@@ -377,6 +401,11 @@ func (d DFUDevice) WriteMemory(addr uint, data []byte) error {
 	//block size, write in max block size (2048 bytes)
 	transferSize := 2048
 	bytesLeftToTransfer := len(data)
+
+	d.progressBars.setStatus(progressMessage)
+	d.progressBars.setMax(uint(bytesLeftToTransfer))
+	d.progressBars.setIncrement(uint(transferSize))
+	d.progressBars.reset()
 
 	//Block num starts at 2 to signal dnload() that it is a write command per spec
 	blockNum := uint16(0)
@@ -394,6 +423,8 @@ func (d DFUDevice) WriteMemory(addr uint, data []byte) error {
 			dataSlice := data[transferSize*int(blockNum):]
 			err := d.SetAddress(addr)
 
+			d.progressBars.setIncrement(uint(bytesLeftToTransfer))
+
 			if err != nil {
 				return fmt.Errorf("Error in final SetAddress of Write Memory: %v", err)
 			}
@@ -403,6 +434,9 @@ func (d DFUDevice) WriteMemory(addr uint, data []byte) error {
 			if err != nil {
 				return fmt.Errorf("Write failed after final dnload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)
 			}
+
+			d.progressBars.increment()
+
 			return err
 		}
 		dataSlice := data[transferSize*int(blockNum) : transferSize*(int(blockNum)+1)]
@@ -414,6 +448,7 @@ func (d DFUDevice) WriteMemory(addr uint, data []byte) error {
 		if err != nil {
 			return fmt.Errorf("Write failed after dnload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)
 		}
+		d.progressBars.increment()
 		bytesLeftToTransfer -= transferSize
 		blockNum++
 	}
@@ -469,7 +504,7 @@ func (d DFUDevice) uploadWaitOnIdle() error {
 	return err
 }
 
-func (d DFUDevice) ReadMemory(addr, length uint) ([]byte, error) {
+func (d DFUDevice) ReadMemory(addr, length uint, progressMessage string) ([]byte, error) {
 	data := make([]byte, length)
 
 	if length == 0 {
@@ -487,8 +522,13 @@ func (d DFUDevice) ReadMemory(addr, length uint) ([]byte, error) {
 	blockNum := uint16(0)
 	bytesLeftToTransfer := int(length)
 
+	d.progressBars.reset()
+	d.progressBars.setStatus(progressMessage)
+	d.progressBars.setMax(uint(bytesLeftToTransfer))
+
 	//Entire buffer fits in a single
 	if int(length) < transferSize {
+		d.progressBars.setIncrement(uint(bytesLeftToTransfer))
 
 		err = d.uploadWaitOnIdle()
 
@@ -497,8 +537,13 @@ func (d DFUDevice) ReadMemory(addr, length uint) ([]byte, error) {
 		}
 
 		_, err = d.dev.Control(0xA1, cmdUPLOAD, blockNum+2, dfuINTERFACE, data)
+
+		d.progressBars.increment()
+
 		return data, err
 	}
+
+	d.progressBars.setIncrement(uint(transferSize))
 
 	//address = ((wValue - 2) * transferSize) + addr
 	for bytesLeftToTransfer > 0 {
@@ -512,6 +557,9 @@ func (d DFUDevice) ReadMemory(addr, length uint) ([]byte, error) {
 		//thisAddr := int(blockNum)*transferSize + int(addr)
 		//final transfer is less than transfer size, must reset address
 		if bytesLeftToTransfer < transferSize {
+
+			d.progressBars.setIncrement(uint(bytesLeftToTransfer))
+
 			dataSlice := data[transferSize*int(blockNum):]
 			err := d.SetAddress(addr)
 
@@ -527,9 +575,13 @@ func (d DFUDevice) ReadMemory(addr, length uint) ([]byte, error) {
 
 			//fmt.Printf("Reading from 0x%x, bytes left : %d\r\n", thisAddr, 0)
 			_, err = d.dev.Control(0xA1, cmdUPLOAD, blockNum+2, dfuINTERFACE, dataSlice)
+
 			if err != nil {
 				return nil, fmt.Errorf("Read failed after final upload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)
 			}
+
+			d.progressBars.increment()
+
 			return data, err
 		}
 
@@ -539,6 +591,8 @@ func (d DFUDevice) ReadMemory(addr, length uint) ([]byte, error) {
 
 		//Transfer next block
 		_, err = d.dev.Control(0xA1, cmdUPLOAD, blockNum+2, dfuINTERFACE, dataSlice)
+
+		d.progressBars.increment()
 
 		if err != nil {
 			return nil, fmt.Errorf("Read failed after dnload address 0x%x: %v", int(blockNum)*transferSize+int(addr), err)

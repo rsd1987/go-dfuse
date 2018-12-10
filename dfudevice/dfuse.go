@@ -51,15 +51,14 @@ func WriteImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 
 			if startPage == -1 {
 				return fmt.Errorf("Failed to find target address %x in device memory", target.Prefix.Address)
-			} else {
-				for numPages := 0; numPages < int(pagesToErase); numPages++ {
-					err = dfuDevice.PageErase(uint(target.Prefix.Address) + (uint(startPage+numPages) * memory.PageSize))
-
-					if err != nil {
-						return err
-					}
-				}
 			}
+
+			err := dfuDevice.MultiPageErase(uint(target.Prefix.Address), uint(startPage), pagesToErase, memory.PageSize, "Erasing Pages")
+
+			if err != nil {
+				return err
+			}
+
 		}
 	}
 
@@ -68,7 +67,7 @@ func WriteImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 	//By this point, the appropriate amount of flash has been erased, write each target
 	for _, target := range dfuImage.Targets {
 		//fmt.Printf("Writing to address 0x%x\r\n", target.Prefix.Address)
-		dfuDevice.WriteMemory(uint(target.Prefix.Address), target.Elements)
+		dfuDevice.WriteMemory(uint(target.Prefix.Address), target.Elements, "Writing Image")
 	}
 
 	return err
@@ -76,7 +75,7 @@ func WriteImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 
 func VerifyImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) (bool, error) {
 	for _, target := range dfuImage.Targets {
-		deviceData, err := dfuDevice.ReadMemory(uint(target.Prefix.Address), uint(target.Prefix.Size))
+		deviceData, err := dfuDevice.ReadMemory(uint(target.Prefix.Address), uint(target.Prefix.Size), "Verifying Image")
 
 		if err != nil {
 			return false, fmt.Errorf("Verify failed to read device memory: %v", err)
