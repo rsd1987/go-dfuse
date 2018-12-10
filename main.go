@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/willtoth/go-dfu/dfudevice"
-	"github.com/willtoth/go-dfu/dfufile"
+	"github.com/willtoth/go-dfuse/dfudevice"
+	"github.com/willtoth/go-dfuse/dfufile"
 	"gopkg.in/cheggaaa/pb.v1"
 )
 

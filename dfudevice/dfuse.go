@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/willtoth/go-dfu/dfufile"
+	"github.com/willtoth/go-dfuse/dfufile"
 )
 
 func WriteImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
