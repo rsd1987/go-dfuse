@@ -93,24 +93,14 @@ func (d dfuStatus) Wait() {
 
 const dfuINTERFACE = 0
 
-//TODO: Implement a list mechanism which lists and devices which report to be in DFU mode
-/*
-func ListDevices() {
-	for _, dev := range GetDevices() {
-		desc := dev.Desc
-		fmt.Printf("%03d.%03d %s:%s %s\n", desc.Bus, desc.Address, desc.Vendor, desc.Product, usbid.Describe(desc))
-	}
-}
-
-func GetDevices() []*gousb.Device {
+func List(VID, PID uint) []string {
+	devices := make([]string, 0)
 	ctx := gousb.NewContext()
 	defer ctx.Close()
 
-	//instead on the command line run 'export LIBUSB_DEBUG=7' before running
-	//ctx.Debug(7)
-
-	devs, err := ctx.OpenDevices(func(desc *gousb.DeviceDesc) bool {
-		if desc.Vendor == SPARKMAXDFUVID && desc.Product == SPARKMAXDFUPID {
+	devs, _ := ctx.OpenDevices(func(d *gousb.DeviceDesc) bool {
+		if (d.Vendor == gousb.ID(VID)) && (d.Product == gousb.ID(PID)) {
+			devices = append(devices, fmt.Sprintf("DFU Device Bus: %d.%d ID: %s:%s", d.Bus, d.Address, d.Vendor, d.Product))
 			return true
 		}
 		return false
@@ -123,14 +113,8 @@ func GetDevices() []*gousb.Device {
 		}
 	}()
 
-	// OpenDevices can occaionally fail, so be sure to check its return value.
-	if err != nil {
-		log.Fatalf("list: %s", err)
-	}
-
-	return devs
+	return devices
 }
-*/
 
 type DFUDevice struct {
 	ctx *gousb.Context
