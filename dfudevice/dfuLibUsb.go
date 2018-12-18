@@ -18,7 +18,6 @@ func init() {
 }
 
 func (d dfulibusb) Open(vid, pid uint16) (dfuDevice DFUDevice, err error) {
-	fmt.Println("Running LIBUSB Driver!")
 	// Initialize a new Context.
 	ctx := gousb.NewContext()
 

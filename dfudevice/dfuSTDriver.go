@@ -20,7 +20,6 @@ func init() {
 
 func (d dfuSTDriver) Open(vid, pid uint16) (dfuDevice DFUDevice, err error) {
 	//GUID of STM32F3 DFU Driver
-	fmt.Println("Running STDriver!")
 	guid := setupapi.Guid{0x3fe809ab, 0xfb91, 0x4cb5, [8]byte{0xa6, 0x43, 0x69, 0x67, 0x0d, 0x52, 0x36, 0x6e}}
 	devInfo, err := setupapi.SetupDiGetClassDevsEx(guid, "", 0, setupapi.Present|setupapi.InterfaceDevice, 0, "", 0)
 	if err != nil {
