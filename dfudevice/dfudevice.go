@@ -3,13 +3,10 @@ package dfudevice
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/google/gousb"
 )
 
 //DFU Commands
@@ -94,31 +91,15 @@ func (d dfuStatus) Wait() {
 const dfuINTERFACE = 0
 
 func List(VID, PID uint) []string {
-	devices := make([]string, 0)
-	ctx := gousb.NewContext()
-	defer ctx.Close()
-
-	devs, _ := ctx.OpenDevices(func(d *gousb.DeviceDesc) bool {
-		if (d.Vendor == gousb.ID(VID)) && (d.Product == gousb.ID(PID)) {
-			devices = append(devices, fmt.Sprintf("DFU Device Bus: %d.%d ID: %s:%s", d.Bus, d.Address, d.Vendor, d.Product))
-			return true
-		}
-		return false
-	})
-
-	// All Devices returned from OpenDevices must be closed.
-	defer func() {
-		for _, d := range devs {
-			d.Close()
-		}
-	}()
-
-	return devices
+	result := make([]string, 0)
+	for _, driver := range dfuDriverList {
+		result = append(result, driver.List(VID, PID)...)
+	}
+	return result
 }
 
 type DFUDevice struct {
-	ctx *gousb.Context
-	dev *gousb.Device
+	dev dfuDriver
 
 	progressBars progressList
 }
@@ -131,59 +112,17 @@ func (d DFUDevice) Close() {
 	if d.dev != nil {
 		d.dev.Close()
 	}
-
-	if d.ctx != nil {
-		d.ctx.Close()
-	}
 }
 
-func Open(vid, pid gousb.ID) (device DFUDevice, err error) {
-	// Initialize a new Context.
-	device.ctx = gousb.NewContext()
-
-	ctx := device.ctx
-
-	// Open any device with a given VID/PID using a convenience function.
-	var found bool
-	devs, err := ctx.OpenDevices(func(desc *gousb.DeviceDesc) bool {
-		if found {
-			return false
+func Open(vid, pid uint16) (device DFUDevice, err error) {
+	//Return the first successful opened driver
+	for _, driver := range dfuDriverList {
+		device, err = driver.Open(vid, pid)
+		if err == nil {
+			return
 		}
-		if desc.Vendor == vid && desc.Product == pid {
-			found = true
-			return true
-		}
-		return false
-	})
-
-	//TODO: sometimes this throws an unrelated error even if its not related to this particular device
-	//ignore for now as another call below will error if there is truly an error
-	//if err != nil {
-	//	return err
-	//}
-
-	if len(devs) == 0 {
-		return device, fmt.Errorf("No DFU Device Found")
-	} else if len(devs) > 1 {
-		return device, fmt.Errorf("More than 1 DFU device found")
 	}
-
-	device.dev = devs[0]
-	device.dev.ControlTimeout = 5000000000 //5s
-
-	//TODO: This should find the correct interface if possible
-	// Claim the default interface
-	_, done, err := device.getInterface()
-	if err != nil {
-		log.Fatalf("%s.DefaultInterface(): %v", device.dev, err)
-	}
-	defer done()
-
-	return device, device.ClearStatus()
-}
-
-func (d DFUDevice) getInterface() (intf *gousb.Interface, done func(), err error) {
-	return d.dev.DefaultInterface()
+	return
 }
 
 func (d DFUDevice) ClearStatus() error {

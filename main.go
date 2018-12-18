@@ -58,6 +58,7 @@ func StartNew() consoleProgress {
 }
 
 func main() {
+	fmt.Println(dfudevice.List(0, 0))
 	filename := os.Args[1]
 
 	fmt.Println("Opening device...")
