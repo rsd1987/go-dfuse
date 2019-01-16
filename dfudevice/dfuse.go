@@ -53,7 +53,7 @@ func WriteImage(dfuImage dfufile.DFUImage, dfuDevice DFUDevice) error {
 				return fmt.Errorf("Failed to find target address %x in device memory", target.Prefix.Address)
 			}
 
-			err := dfuDevice.MultiPageErase(uint(target.Prefix.Address), uint(startPage), pagesToErase, memory.PageSize, "Erasing Pages")
+			err := dfuDevice.MultiPageErase(uint(target.Prefix.Address), pagesToErase, memory.PageSize, "Erasing Pages")
 
 			if err != nil {
 				return err

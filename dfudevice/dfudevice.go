@@ -263,14 +263,14 @@ func (d DFUDevice) dnloadCommand(wValue uint16, buffer []byte) error {
 	return err
 }
 
-func (d DFUDevice) MultiPageErase(addr, startPage, pagesToErase, pageSize uint, progressMessage string) error {
+func (d DFUDevice) MultiPageErase(addr, pagesToErase, pageSize uint, progressMessage string) error {
 	d.progressBars.setStatus(progressMessage)
 	d.progressBars.setMax(pagesToErase)
 	d.progressBars.setIncrement(1)
 	d.progressBars.reset()
 
 	for numPages := uint(0); numPages < pagesToErase; numPages++ {
-		err := d.PageErase(addr + ((startPage + numPages) * pageSize))
+		err := d.PageErase(addr + ((numPages) * pageSize))
 
 		if err != nil {
 			return err
