@@ -13,11 +13,13 @@ type dfulibusb struct {
 }
 
 func init() {
-	var d dfulibusb
-	addDriver(&d)
+	// TODO: Change list string to return the value for Open()
+	//var d dfulibusb
+	//addDriver(&d)
 }
 
-func (d dfulibusb) Open(vid, pid uint16) (dfuDevice DFUDevice, err error) {
+func (d dfulibusb) Open(path string) (dfuDevice DFUDevice, err error) {
+	var vid, pid uint16
 	// Initialize a new Context.
 	ctx := gousb.NewContext()
 
@@ -66,7 +68,8 @@ func (d dfulibusb) Open(vid, pid uint16) (dfuDevice DFUDevice, err error) {
 	return
 }
 
-func (d *dfulibusb) List(VID, PID uint) []string {
+func (d *dfulibusb) List() []string {
+	var VID, PID uint
 	devices := make([]string, 0)
 	ctx := gousb.NewContext()
 	defer ctx.Close()

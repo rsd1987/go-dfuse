@@ -4,6 +4,7 @@ package dfudevice
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/willtoth/go-STTub30"
 	"github.com/willtoth/setupapi"
@@ -18,7 +19,7 @@ func init() {
 	addDriver(&d)
 }
 
-func (d dfuSTDriver) Open(vid, pid uint16) (dfuDevice DFUDevice, err error) {
+func (d dfuSTDriver) Open(path string) (dfuDevice DFUDevice, err error) {
 	//GUID of STM32F3 DFU Driver
 	guid := setupapi.Guid{0x3fe809ab, 0xfb91, 0x4cb5, [8]byte{0xa6, 0x43, 0x69, 0x67, 0x0d, 0x52, 0x36, 0x6e}}
 	devInfo, err := setupapi.SetupDiGetClassDevsEx(guid, "", 0, setupapi.Present|setupapi.InterfaceDevice, 0, "", 0)
@@ -26,23 +27,34 @@ func (d dfuSTDriver) Open(vid, pid uint16) (dfuDevice DFUDevice, err error) {
 		return
 	}
 
-	devPath, err := devInfo.DevicePath(guid)
-	if err != nil {
-		return
-	}
+	for i := 0; err == nil; i++ {
+		var devPath string
+		devPath, err = devInfo.DevicePath(guid, uint32(i))
+		if err != nil {
+			err = fmt.Errorf("Device Not Found")
+			break
+		}
 
-	dev, err := sttub30.Open(devPath)
-	if err != nil {
-		return
-	}
+		path = strings.Replace(path, "\x00", "", -1)
+		devPath = strings.Replace(devPath, "\x00", "", -1)
 
-	err = dev.SelectCurrentConfiguration(0, 0, 0)
-	if err != nil {
-		return
-	}
+		if path == devPath {
+			var dev sttub30.STDevice
+			dev, err = sttub30.Open(devPath)
+			if err != nil {
+				break
+			}
 
-	d = dfuSTDriver{&dev}
-	dfuDevice.dev = d
+			err = dev.SelectCurrentConfiguration(0, 0, 0)
+			if err != nil {
+				break
+			}
+
+			d = dfuSTDriver{&dev}
+			dfuDevice.dev = d
+			break
+		}
+	}
 	return
 }
 
@@ -90,7 +102,9 @@ func (d dfuSTDriver) Close() {
 	d.STDevice.Close()
 }
 
-func (d dfuSTDriver) List(VID, PID uint) []string {
+func (d dfuSTDriver) List() []string {
+	devices := make([]string, 0)
+
 	//GUID of STM32F3 DFU Driver
 	guid := setupapi.Guid{0x3fe809ab, 0xfb91, 0x4cb5, [8]byte{0xa6, 0x43, 0x69, 0x67, 0x0d, 0x52, 0x36, 0x6e}}
 	devInfo, err := setupapi.SetupDiGetClassDevsEx(guid, "", 0, setupapi.Present|setupapi.InterfaceDevice, 0, "", 0)
@@ -98,16 +112,20 @@ func (d dfuSTDriver) List(VID, PID uint) []string {
 		return nil
 	}
 
-	devPath, err := devInfo.DevicePath(guid)
-	if err != nil {
-		return nil
+	for i := 0; err == nil; i++ {
+		devPath, err := devInfo.DevicePath(guid, uint32(i))
+
+		if err != nil {
+			break
+		}
+
+		dev, err := sttub30.Open(devPath)
+		defer dev.Close()
+
+		if err == nil {
+			devices = append(devices, devPath)
+		}
 	}
 
-	dev, err := sttub30.Open(devPath)
-	if err != nil {
-		return nil
-	}
-	defer dev.Close()
-
-	return nil
+	return devices
 }

@@ -90,10 +90,10 @@ func (d dfuStatus) Wait() {
 
 const dfuINTERFACE = 0
 
-func List(VID, PID uint) []string {
+func List() []string {
 	result := make([]string, 0)
 	for _, driver := range dfuDriverList {
-		result = append(result, driver.List(VID, PID)...)
+		result = append(result, driver.List()...)
 	}
 	return result
 }
@@ -114,12 +114,12 @@ func (d DFUDevice) Close() {
 	}
 }
 
-func Open(vid, pid uint16) (device DFUDevice, err error) {
+func Open(path string) (device DFUDevice, err error) {
 	//Return the first successful opened driver
 	for _, driver := range dfuDriverList {
-		device, err = driver.Open(vid, pid)
+		device, err = driver.Open(path)
 		if err == nil {
-			return
+			break
 		}
 	}
 	return

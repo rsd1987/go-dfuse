@@ -58,12 +58,35 @@ func StartNew() consoleProgress {
 }
 
 func main() {
-	fmt.Println(dfudevice.List(0, 0))
-	filename := os.Args[1]
+	deviceList := dfudevice.List()
+	for _, dev := range deviceList {
+		fmt.Println(dev)
+	}
+
+	if len(deviceList) == 0 {
+		return
+	}
+
+	var filename string
+	var path string
+	if len(os.Args) < 2 {
+		return
+	} else if len(os.Args) == 2 {
+		if len(deviceList) > 1 {
+			fmt.Println("Usage: go-dfuse.exe <path> <dfuFile>")
+			fmt.Println("More than one device detected, must specify path")
+			return
+		}
+		filename = os.Args[1]
+		path = deviceList[0]
+	} else {
+		path = os.Args[1]
+		filename = os.Args[2]
+	}
 
 	fmt.Println("Opening device...")
 
-	dev, err := dfudevice.Open(SPARKMAXDFUVID, SPARKMAXDFUPID)
+	dev, err := dfudevice.Open(path)
 	defer dev.Close()
 
 	if err != nil {
